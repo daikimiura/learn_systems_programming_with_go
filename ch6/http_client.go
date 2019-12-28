@@ -64,7 +64,7 @@ func main() {
 			if err != nil {
 				panic(err)
 			}
-			io.Copy(os.Stdout, response.Body)
+			io.Copy(os.Stdout, reader)
 			reader.Close()
 		} else {
 			io.Copy(os.Stdout, response.Body)
