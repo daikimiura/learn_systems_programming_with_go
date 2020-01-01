@@ -4,55 +4,65 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"strings"
+	"time"
 )
 
-var contents = []string{
-	"これは、私わたしが小さいときに、村の茂平もへいというおじいさんからきいたお話です。",
-	"むかしは、私たちの村のちかくの、中山なかやまというところに小さなお城があって、中山さまというおとのさまが、おられたそうです。",
-	"その中山から、少しはなれた山の中に、「ごん狐ぎつね」という狐がいました。ごんは、一人ひとりぼっちの小狐で、しだの一ぱいしげった森の中に穴をほって住んでいました。",
-	"そして、夜でも昼でも、あたりの村へ出てきて、いたずらばかりしました。",
-	"はたけへ入って芋をほりちらしたり、菜種なたねがらの、ほしてあるのへ火をつけたり、百姓家ひゃくしょうやの裏手につるしてあるとんがらしをむしりとって、いったり、いろんなことをしました。",
-	"或ある秋あきのことでした。二、三日雨がふりつづいたその間あいだ、ごんは、外へも出られなくて穴の中にしゃがんでいました。",
+func writeToConn(sessionResponses chan chan *http.Response, conn net.Conn) {
+	defer conn.Close()
+	for sessionResponse := range sessionResponses {
+		response := <-sessionResponse
+		response.Write(conn)
+		close(sessionResponse)
+	}
 }
 
-func isGzipAcceptable(request *http.Request) bool {
-	return strings.Index(strings.Join(request.Header["Accept-Encoding"], ","), "gzip") != -1
+func handleRequest(request *http.Request, resultReceiver chan *http.Response) {
+	dump, err := httputil.DumpRequest(request, true)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(string(dump))
+	content := "Hello World\n"
+	response := &http.Response{
+		StatusCode:    200,
+		ProtoMajor:    1,
+		ProtoMinor:    1,
+		ContentLength: int64(len(content)),
+		Body:          ioutil.NopCloser(strings.NewReader(content)),
+	}
+
+	resultReceiver <- response
 }
 
 func processSession(conn net.Conn) {
-	fmt.Printf("Accept %v\n", conn.RemoteAddr())
-	defer conn.Close()
+	sessionResponses := make(chan chan *http.Response, 50)
+	defer close(sessionResponses)
+
+	go writeToConn(sessionResponses, conn)
+	reader := bufio.NewReader(conn)
 	for {
-		request, err := http.ReadRequest(bufio.NewReader(conn))
+		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		request, err := http.ReadRequest(reader)
 		if err != nil {
-			if err == io.EOF {
+			neterr, ok := err.(net.Error)
+			if ok && neterr.Timeout() {
+				fmt.Println("Timeout")
+				break
+			} else if err == io.EOF {
 				break
 			}
 			panic(err)
 		}
 
-		dump, err := httputil.DumpRequest(request, true)
-		if err != nil {
-			panic(err)
-		}
-		fmt.Println(string(dump))
+		sessionResponse := make(chan *http.Response)
+		sessionResponses <- sessionResponse
 
-		fmt.Fprintf(conn, strings.Join([]string{
-			"HTTP/1.1 200 OK",
-			"Content-TypeL text/plain",
-			"Transfer-Encoding: chunked",
-			"", "",
-		}, "\r\n"))
-
-		for _, content := range contents {
-			bytes := []byte(content)
-			fmt.Fprintf(conn, "%x\r\n%s\r\n", len(bytes), content)
-		}
-		fmt.Fprintf(conn, "0\r\n\r\n")
+		go handleRequest(request, sessionResponse)
 	}
 }
 
